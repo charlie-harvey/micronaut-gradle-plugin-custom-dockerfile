@@ -1,0 +1,27 @@
+FROM amazonlinux:latest AS graalvm
+ENV LANG=en_US.UTF-8
+RUN yum install -y gcc gcc-c++ libc6-dev zlib1g-dev curl bash zlib zlib-devel zlib-static zip tar gzip
+RUN curl -4 -L https://github.com/graalvm/graalvm-ce-builds/releases/download/vm-22.2.0/graalvm-ce-java11-linux-aarch64-22.2.0.tar.gz -o /tmp/graalvm-ce-java11-linux-aarch64-22.2.0.tar.gz
+RUN tar -zxf /tmp/graalvm-ce-java11-linux-aarch64-22.2.0.tar.gz -C /tmp && mv /tmp/graalvm-ce-java11-22.2.0 /usr/lib/graalvm
+RUN rm -rf /tmp/*
+RUN /usr/lib/graalvm/bin/gu install native-image
+CMD ["/usr/lib/graalvm/bin/native-image"]
+ENV PATH=/usr/lib/graalvm/bin:${PATH}
+FROM graalvm AS builder
+WORKDIR /home/app
+COPY layers/libs /home/app/libs
+COPY layers/classes /home/app/classes
+COPY layers/resources /home/app/resources
+COPY layers/application.jar /home/app/application.jar
+RUN mkdir /home/app/config-dirs
+COPY config-dirs/generateResourcesConfigFile /home/app/config-dirs/generateResourcesConfigFile
+RUN native-image -cp /home/app/libs/*.jar:/home/app/resources:/home/app/application.jar --no-fallback -H:Name=application -J--add-exports=org.graalvm.nativeimage.builder/com.oracle.svm.core.jdk=ALL-UNNAMED -J--add-exports=org.graalvm.nativeimage.builder/com.oracle.svm.core.configure=ALL-UNNAMED -J--add-exports=org.graalvm.sdk/org.graalvm.nativeimage.impl=ALL-UNNAMED -H:ConfigurationFileDirectories=/home/app/config-dirs/generateResourcesConfigFile -H:Class=com.example.FunctionLambdaRuntime
+FROM amazonlinux:latest
+WORKDIR /function
+RUN yum install -y zip
+COPY --from=builder /home/app/application /function/func
+RUN echo "#!/bin/sh" >> bootstrap && echo "set -euo pipefail" >> bootstrap && echo "./func -XX:MaximumHeapSizePercent=80 -Dio.netty.allocator.numDirectArenas=0 -Dio.netty.noPreferDirect=true -Djava.library.path=$(pwd)" >> bootstrap
+RUN chmod 777 bootstrap
+RUN chmod 777 func
+RUN zip -j function.zip bootstrap func
+ENTRYPOINT ["/function/func"]
